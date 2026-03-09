@@ -30,7 +30,7 @@ def run_cmd(cmd, timeout=180):
 # ── scanners ──────────────────────────────────────────────────────────────────
 
 def run_nmap(ip):
-    cmd = "nmap -sV -sC -O --open -p 1-1000 --host-timeout 150s --script=vuln " + ip
+    cmd = "nmap -sT -sV --open -p 1-1000 --host-timeout 150s " + ip
     output = run_cmd(cmd, timeout=180)
     ports, services = [], []
     for line in output.splitlines():
