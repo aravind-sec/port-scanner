@@ -369,8 +369,12 @@ body {
       <div class="prog-title">// RUNNING ASSESSMENT</div>
       <div class="prog-steps">
         <div class="step" id="step-resolve"><div class="step-icon">◎</div> Resolving IP address...</div>
-        <div class="step" id="step-nmap"   ><div class="step-icon">◎</div> Nmap port &amp; service scan (ports 1–1000)</div>
+        <div class="step" id="step-nmap"   ><div class="step-icon">◎</div> Nmap port &amp; service scan + vuln scripts</div>
         <div class="step" id="step-nikto"  ><div class="step-icon">◎</div> Nikto web vulnerability scan</div>
+        <div class="step" id="step-msf"    ><div class="step-icon">◎</div> Metasploit auxiliary port scanner</div>
+        <div class="step" id="step-ssl"    ><div class="step-icon">◎</div> SSL/TLS vulnerability check</div>
+        <div class="step" id="step-dirb"   ><div class="step-icon">◎</div> Directory brute force (dirb)</div>
+        <div class="step" id="step-dns"    ><div class="step-icon">◎</div> DNS reconnaissance</div>
         <div class="step" id="step-whatweb"><div class="step-icon">◎</div> WhatWeb technology fingerprint</div>
         <div class="step" id="step-whois"  ><div class="step-icon">◎</div> WHOIS domain intelligence</div>
         <div class="step" id="step-score"  ><div class="step-icon">◎</div> Calculating security score</div>
@@ -402,42 +406,35 @@ body {
         <div class="meta-card"><div class="mk">Resolved IP</div><div class="mv" id="meta-ip">—</div></div>
         <div class="meta-card"><div class="mk">Open Ports</div><div class="mv" id="meta-ports">—</div></div>
         <div class="meta-card"><div class="mk">Web Findings</div><div class="mv" id="meta-findings">—</div></div>
+        <div class="meta-card"><div class="mk">SSL Issues</div><div class="mv" id="meta-ssl">—</div></div>
+        <div class="meta-card"><div class="mk">Directories</div><div class="mv" id="meta-dirb">—</div></div>
         <div class="meta-card"><div class="mk">Scan Time</div><div class="mv" id="meta-time">—</div></div>
       </div>
 
       <!-- Tabs -->
-      <div class="tabs">
+      <div class="tabs" style="flex-wrap:wrap;">
         <button class="tab-btn active" onclick="showTab('ports',this)">PORTS</button>
         <button class="tab-btn" onclick="showTab('web',this)">WEB VULNS</button>
+        <button class="tab-btn" onclick="showTab('ssl',this)">SSL/TLS</button>
+        <button class="tab-btn" onclick="showTab('dns',this)">DNS</button>
+        <button class="tab-btn" onclick="showTab('dirb',this)">DIRECTORIES</button>
+        <button class="tab-btn" onclick="showTab('msf',this)">METASPLOIT</button>
+        <button class="tab-btn" onclick="showTab('headers',this)">HTTP HEADERS</button>
         <button class="tab-btn" onclick="showTab('tech',this)">TECHNOLOGY</button>
         <button class="tab-btn" onclick="showTab('whois',this)">WHOIS</button>
         <button class="tab-btn" onclick="showTab('raw',this)">RAW OUTPUT</button>
       </div>
 
-      <!-- Ports tab -->
-      <div class="tab-content active" id="tab-ports">
-        <div id="ports-content"></div>
-      </div>
-
-      <!-- Web vulns tab -->
-      <div class="tab-content" id="tab-web">
-        <div id="web-content"></div>
-      </div>
-
-      <!-- Tech tab -->
-      <div class="tab-content" id="tab-tech">
-        <div id="tech-content"></div>
-      </div>
-
-      <!-- Whois tab -->
-      <div class="tab-content" id="tab-whois">
-        <div id="whois-content"></div>
-      </div>
-
-      <!-- Raw tab -->
-      <div class="tab-content" id="tab-raw">
-        <div id="raw-content"></div>
-      </div>
+      <div class="tab-content active" id="tab-ports"><div id="ports-content"></div></div>
+      <div class="tab-content" id="tab-web"><div id="web-content"></div></div>
+      <div class="tab-content" id="tab-ssl"><div id="ssl-content"></div></div>
+      <div class="tab-content" id="tab-dns"><div id="dns-content"></div></div>
+      <div class="tab-content" id="tab-dirb"><div id="dirb-content"></div></div>
+      <div class="tab-content" id="tab-msf"><div id="msf-content"></div></div>
+      <div class="tab-content" id="tab-headers"><div id="headers-content"></div></div>
+      <div class="tab-content" id="tab-tech"><div id="tech-content"></div></div>
+      <div class="tab-content" id="tab-whois"><div id="whois-content"></div></div>
+      <div class="tab-content" id="tab-raw"><div id="raw-content"></div></div>
 
     </div>
   </div>
@@ -478,8 +475,8 @@ async function startScan() {
   setProgress(0);
 
   // fake step progression (real scan is server-side all at once)
-  const steps = ['resolve','nmap','nikto','whatweb','whois','score'];
-  const pcts  = [10, 30, 55, 72, 88, 98];
+  const steps = ['resolve','nmap','nikto','msf','ssl','dirb','dns','whatweb','whois','score'];
+  const pcts  = [5, 15, 30, 45, 58, 68, 78, 86, 93, 98];
   let si = 0;
 
   function nextStep() {
@@ -580,6 +577,58 @@ function renderResults(d) {
     techEl.innerHTML = '<div class="empty">NO TECHNOLOGY DATA</div>';
   }
 
+
+  // SSL tab
+  const sslEl = document.getElementById('ssl-content');
+  if (d.ssl && d.ssl.issues && d.ssl.issues.length) {
+    sslEl.innerHTML = d.ssl.issues.map(i => `<div class="finding-item critical">${i}</div>`).join('');
+  } else {
+    sslEl.innerHTML = '<div class="empty">NO SSL/TLS ISSUES DETECTED</div>';
+  }
+  document.getElementById('meta-ssl').textContent = (d.ssl && d.ssl.issues) ? d.ssl.issues.length : 0;
+
+  // DNS tab
+  const dnsEl = document.getElementById('dns-content');
+  if (d.dns && d.dns.records && d.dns.records.length) {
+    dnsEl.innerHTML = `<div class="raw-out">${escHtml(d.dns.records.join('\n'))}</div>`;
+  } else {
+    dnsEl.innerHTML = '<div class="empty">NO DNS RECORDS FOUND</div>';
+  }
+
+  // DIRB tab
+  const dirbEl = document.getElementById('dirb-content');
+  if (d.dirb && d.dirb.found && d.dirb.found.length) {
+    dirbEl.innerHTML = d.dirb.found.map(f => `<div class="finding-item">${escHtml(f)}</div>`).join('');
+  } else {
+    dirbEl.innerHTML = '<div class="empty">NO EXPOSED DIRECTORIES FOUND</div>';
+  }
+  document.getElementById('meta-dirb').textContent = (d.dirb && d.dirb.found) ? d.dirb.found.length : 0;
+
+  // MSF tab
+  const msfEl = document.getElementById('msf-content');
+  const msfPorts = (d.msf && d.msf.msf_open_ports) ? d.msf.msf_open_ports : [];
+  let msfHtml = '';
+  if (msfPorts.length) {
+    msfHtml += `<div style="margin-bottom:14px;font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--orange);">MSF confirmed ${msfPorts.length} open port(s): ${msfPorts.join(', ')}</div>`;
+  }
+  msfHtml += `<div class="raw-out">${escHtml((d.msf && d.msf.raw) ? d.msf.raw : '[NOT RUN]')}</div>`;
+  msfEl.innerHTML = msfHtml;
+
+  // Headers tab
+  const headersEl = document.getElementById('headers-content');
+  const missing = (d.headers && d.headers.missing_security) ? d.headers.missing_security : [];
+  const hdrObj  = (d.headers && d.headers.headers) ? d.headers.headers : {};
+  let hHtml = '';
+  if (missing.length) {
+    hHtml += `<div style="margin-bottom:16px;"><div style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:4px;color:var(--red);margin-bottom:8px;">MISSING SECURITY HEADERS</div>`;
+    hHtml += missing.map(h => `<div class="finding-item critical">MISSING: ${h}</div>`).join('');
+    hHtml += '</div>';
+  }
+  if (Object.keys(hdrObj).length) {
+    hHtml += `<table class="whois-table">${Object.entries(hdrObj).map(([k,v])=>`<tr><td>${escHtml(k)}</td><td>${escHtml(v)}</td></tr>`).join('')}</table>`;
+  }
+  headersEl.innerHTML = hHtml || '<div class="empty">NO HEADER DATA</div>';
+
   // whois tab
   const whoisEl = document.getElementById('whois-content');
   const wi = d.whois.info;
@@ -598,7 +647,15 @@ function renderResults(d) {
     <p style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:3px;color:var(--muted);margin:16px 0 12px;">NIKTO OUTPUT</p>
     <div class="raw-out">${escHtml(d.nikto.raw)}</div>
     <p style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:3px;color:var(--muted);margin:16px 0 12px;">WHATWEB OUTPUT</p>
-    <div class="raw-out">${escHtml(d.whatweb.raw)}</div>`;
+    <div class="raw-out">${escHtml(d.whatweb.raw)}</div>
+    <p style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:3px;color:var(--muted);margin:16px 0 12px;">SSL SCAN OUTPUT</p>
+    <div class="raw-out">${escHtml(d.ssl ? d.ssl.raw : '')}</div>
+    <p style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:3px;color:var(--muted);margin:16px 0 12px;">DNS RECON OUTPUT</p>
+    <div class="raw-out">${escHtml(d.dns ? d.dns.raw : '')}</div>
+    <p style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:3px;color:var(--muted);margin:16px 0 12px;">DIRB OUTPUT</p>
+    <div class="raw-out">${escHtml(d.dirb ? d.dirb.raw : '')}</div>
+    <p style="font-family:'Share Tech Mono',monospace;font-size:9px;letter-spacing:3px;color:var(--muted);margin:16px 0 12px;">METASPLOIT OUTPUT</p>
+    <div class="raw-out">${escHtml(d.msf ? d.msf.raw : '')}</div>`;
 
   document.getElementById('results-wrap').scrollIntoView({behavior:'smooth'});
 }
