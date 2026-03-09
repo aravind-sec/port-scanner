@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NETSCAN // Port Intelligence</title>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #020c14;
+            --panel: #040f1a;
+            --border: #0a3a5c;
+            --glow: #00d4ff;
+            --glow2: #00ff9d;
+            --danger: #ff3c5a;
+            --text: #a8d8ea;
+            --muted: #2a5a74;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Share Tech Mono', monospace;
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* Animated grid background */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+            animation: gridScroll 20s linear infinite;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        @keyframes gridScroll {
+            0% { background-position: 0 0; }
+            100% { background-position: 40px 40px; }
+        }
+
+        /* Scanline overlay */
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0, 0, 0, 0.08) 2px,
+                rgba(0, 0, 0, 0.08) 4px
+            );
+            pointer-events: none;
+            z-index: 999;
+        }
+
+        .container {
+            max-width: 860px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 50px;
+            animation: fadeDown 0.8s ease both;
+        }
+
+        @keyframes fadeDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .logo-line {
+            font-size: 10px;
+            color: var(--muted);
+            letter-spacing: 6px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .title {
+            font-family: 'Orbitron', monospace;
+            font-size: clamp(28px, 5vw, 52px);
+            font-weight: 900;
+            color: var(--glow);
+            text-shadow:
+                0 0 20px rgba(0, 212, 255, 0.8),
+                0 0 60px rgba(0, 212, 255, 0.3);
+            letter-spacing: 4px;
+            line-height: 1;
+        }
+
+        .subtitle {
+            font-size: 11px;
+            color: var(--muted);
+            letter-spacing: 8px;
+            margin-top: 10px;
+            text-transform: uppercase;
+        }
+
+        .title-divider {
+            width: 200px;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--glow), transparent);
+            margin: 20px auto;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+
+        /* Scanner Panel */
+        .scanner-panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            padding: 32px;
+            margin-bottom: 30px;
+            position: relative;
+            animation: fadeUp 0.8s 0.2s ease both;
+            box-shadow:
+                0 0 40px rgba(0, 212, 255, 0.05),
+                inset 0 0 40px rgba(0, 0, 0, 0.3);
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Corner decorations */
+        .scanner-panel::before,
+        .scanner-panel::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            border-color: var(--glow);
+            border-style: solid;
+        }
+
+        .scanner-panel::before {
+            top: -1px; left: -1px;
+            border-width: 2px 0 0 2px;
+        }
+
+        .scanner-panel::after {
+            bottom: -1px; right: -1px;
+            border-width: 0 2px 2px 0;
+        }
+
+        .panel-label {
+            font-size: 9px;
+            letter-spacing: 5px;
+            color: var(--glow);
+            text-transform: uppercase;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .panel-label::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, var(--border), transparent);
+        }
+
+        .input-group {
+            display: flex;
+            gap: 0;
+            position: relative;
+        }
+
+        .input-prefix {
+            background: rgba(0, 212, 255, 0.08);
+            border: 1px solid var(--border);
+            border-right: none;
+            padding: 14px 16px;
+            font-size: 11px;
+            color: var(--glow);
+            letter-spacing: 2px;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            background: rgba(0, 20, 40, 0.8);
+            border: 1px solid var(--border);
+            color: #fff;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 15px;
+            padding: 14px 18px;
+            outline: none;
+            transition: all 0.3s ease;
+            caret-color: var(--glow);
+        }
+
+        input[type="text"]::placeholder {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        input[type="text"]:focus {
+            border-color: var(--glow);
+            background: rgba(0, 212, 255, 0.04);
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.1);
+        }
+
+        .scan-btn {
+            background: transparent;
+            border: 1px solid var(--glow);
+            color: var(--glow);
+            font-family: 'Orbitron', monospace;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            padding: 14px 28px;
+            cursor: pointer;
+            text-transform: uppercase;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .scan-btn::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: var(--glow);
+            transform: translateX(-100%);
+            transition: transform 0.3s ease;
+            z-index: -1;
+        }
+
+        .scan-btn:hover {
+            color: var(--bg);
+            box-shadow: 0 0 30px rgba(0, 212, 255, 0.4);
+        }
+
+        .scan-btn:hover::before {
+            transform: translateX(0);
+        }
+
+        .scan-btn:active {
+            transform: scale(0.98);
+        }
+
+        /* Status bar */
+        .status-bar {
+            margin-top: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 10px;
+            color: var(--muted);
+            letter-spacing: 2px;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--glow2);
+            box-shadow: 0 0 8px var(--glow2);
+            animation: blink 1.5s ease-in-out infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.2; }
+        }
+
+        /* Results panel */
+        .results-panel {
+            animation: fadeUp 0.6s ease both;
+        }
+
+        .results-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .results-title {
+            font-family: 'Orbitron', monospace;
+            font-size: 13px;
+            color: var(--glow2);
+            letter-spacing: 3px;
+            text-shadow: 0 0 12px rgba(0, 255, 157, 0.5);
+        }
+
+        .target-info {
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .target-info span {
+            color: var(--glow);
+        }
+
+        .port-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 10px;
+        }
+
+        .port-card {
+            background: rgba(0, 255, 157, 0.04);
+            border: 1px solid rgba(0, 255, 157, 0.2);
+            padding: 16px 20px;
+            position: relative;
+            overflow: hidden;
+            animation: portAppear 0.4s ease both;
+            cursor: default;
+            transition: all 0.3s ease;
+        }
+
+        .port-card:nth-child(1) { animation-delay: 0.05s; }
+        .port-card:nth-child(2) { animation-delay: 0.1s; }
+        .port-card:nth-child(3) { animation-delay: 0.15s; }
+        .port-card:nth-child(4) { animation-delay: 0.2s; }
+        .port-card:nth-child(5) { animation-delay: 0.25s; }
+        .port-card:nth-child(6) { animation-delay: 0.3s; }
+
+        @keyframes portAppear {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        .port-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0;
+            width: 3px; height: 100%;
+            background: var(--glow2);
+            box-shadow: 0 0 10px var(--glow2);
+        }
+
+        .port-card:hover {
+            background: rgba(0, 255, 157, 0.08);
+            border-color: rgba(0, 255, 157, 0.5);
+            transform: translateX(3px);
+        }
+
+        .port-number {
+            font-family: 'Orbitron', monospace;
+            font-size: 20px;
+            font-weight: 700;
+            color: #fff;
+            display: block;
+        }
+
+        .port-label {
+            font-size: 9px;
+            letter-spacing: 3px;
+            color: var(--glow2);
+            text-transform: uppercase;
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .port-service {
+            font-size: 10px;
+            color: var(--muted);
+            margin-top: 6px;
+        }
+
+        .open-indicator {
+            display: inline-block;
+            width: 5px;
+            height: 5px;
+            background: var(--glow2);
+            border-radius: 50%;
+            box-shadow: 0 0 6px var(--glow2);
+            animation: blink 1s ease-in-out infinite;
+        }
+
+        /* No results */
+        .no-results {
+            text-align: center;
+            padding: 50px 20px;
+            color: var(--muted);
+            background: var(--panel);
+            border: 1px solid var(--border);
+        }
+
+        .no-results .icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+            display: block;
+            filter: grayscale(1);
+        }
+
+        .no-results p {
+            font-size: 11px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+        }
+
+        /* Stats bar */
+        .stats-bar {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+            padding: 14px 20px;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            font-size: 10px;
+            letter-spacing: 2px;
+            color: var(--muted);
+        }
+
+        .stat-item span {
+            color: var(--glow);
+            font-family: 'Orbitron', monospace;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        /* Scanning animation */
+        .scanning-beam {
+            position: absolute;
+            top: 0; left: -100%;
+            width: 60%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.06), transparent);
+            animation: beam 2s ease-in-out infinite;
+        }
+
+        @keyframes beam {
+            0% { left: -60%; }
+            100% { left: 110%; }
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            margin-top: 50px;
+            font-size: 9px;
+            letter-spacing: 4px;
+            color: var(--muted);
+            text-transform: uppercase;
+        }
+
+        /* Well-known port names */
+        .service-map {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <!-- Header -->
+    <div class="header">
+        <div class="logo-line">[ NETWORK RECON SYSTEM v2.4 ]</div>
+        <div class="title">NETSCAN</div>
+        <div class="subtitle">Port Intelligence &amp; Analysis Terminal</div>
+        <div class="title-divider"></div>
+    </div>
+
+    <!-- Scanner Input Panel -->
+    <div class="scanner-panel">
+        <div class="scanning-beam"></div>
+        <div class="panel-label">// TARGET ACQUISITION</div>
+
+        <form method="POST">
+            <div class="input-group">
+                <div class="input-prefix">TARGET://</div>
+                <input
+                    type="text"
+                    name="host"
+                    placeholder="enter domain or ip address"
+                    value="{{ host }}"
+                    autocomplete="off"
+                    spellcheck="false"
+                    required
+                >
+                <button type="submit" class="scan-btn">SCAN</button>
+            </div>
+        </form>
+
+        <div class="status-bar">
+            <div class="status-dot"></div>
+            <span>SYSTEM ONLINE</span>
+            <span style="color: #1a4a5c;">|</span>
+            <span>RANGE: PORTS 1–40</span>
+            <span style="color: #1a4a5c;">|</span>
+            <span>PROTOCOL: TCP</span>
+        </div>
+    </div>
+
+    <!-- Results -->
+    {% if host %}
+        {% if ports %}
+            <div class="results-panel">
+
+                <div class="results-header">
+                    <div class="results-title">// OPEN PORTS DETECTED</div>
+                    <div class="target-info">HOST: <span>{{ host }}</span></div>
+                </div>
+
+                <div class="stats-bar">
+                    <div class="stat-item">OPEN PORTS: <span>{{ ports|length }}</span></div>
+                    <div class="stat-item" style="color: #1a4a5c;">|</div>
+                    <div class="stat-item">STATUS: <span style="color: var(--glow2);">EXPOSED</span></div>
+                </div>
+
+                <div class="port-grid">
+                    {% for port in ports %}
+                    <div class="port-card">
+                        <span class="port-number">{{ port }}</span>
+                        <div class="port-label">
+                            <span class="open-indicator"></span>
+                            OPEN
+                        </div>
+                        <div class="port-service">
+                            {% if port == 21 %}FTP
+                            {% elif port == 22 %}SSH
+                            {% elif port == 23 %}TELNET
+                            {% elif port == 25 %}SMTP
+                            {% elif port == 53 %}DNS
+                            {% elif port == 80 %}HTTP
+                            {% elif port == 110 %}POP3
+                            {% elif port == 143 %}IMAP
+                            {% elif port == 443 %}HTTPS
+                            {% elif port == 3306 %}MYSQL
+                            {% elif port == 3389 %}RDP
+                            {% elif port == 8080 %}HTTP-ALT
+                            {% elif port == 8443 %}HTTPS-ALT
+                            {% else %}UNKNOWN SERVICE
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+        {% else %}
+            <div class="no-results">
+                <span class="icon">🔒</span>
+                <p>No open ports found on {{ host }}</p>
+            </div>
+        {% endif %}
+    {% endif %}
+
+    <div class="footer">
+        NETSCAN // FOR AUTHORIZED TESTING ONLY // USE RESPONSIBLY
+    </div>
+
+</div>
+
+</body>
+</html>
