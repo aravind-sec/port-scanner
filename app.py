@@ -4,6 +4,7 @@ import subprocess
 import threading
 import re
 import datetime
+import shutil
 
 app = Flask(__name__)
 
@@ -15,10 +16,14 @@ def resolve_ip(target):
     except Exception as e:
         return str(e)
 
-def run_cmd(cmd, timeout=180):
+def tool_available(name):
+    return shutil.which(name) is not None
+
+def run_cmd(cmd, timeout=150):
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            cmd, shell=True, capture_output=True,
+            text=True, timeout=timeout
         )
         out = result.stdout + result.stderr
         return out if out.strip() else "[NO OUTPUT]"
@@ -27,11 +32,18 @@ def run_cmd(cmd, timeout=180):
     except Exception as e:
         return f"[ERROR] {str(e)}"
 
+def check_cloudflare(raw):
+    return "cloudflare" in raw.lower() or "cf-ray" in raw.lower()
+
 # ── scanners ──────────────────────────────────────────────────────────────────
 
 def run_nmap(ip):
-    cmd = "nmap -sT -sV --open -p 1-1000 --host-timeout 150s " + ip
-    output = run_cmd(cmd, timeout=180)
+    if not tool_available("nmap"):
+        return {"raw": "[NOT INSTALLED] nmap not found", "open_ports": [], "services": [], "cloudflare": False}
+    # -sT = TCP connect scan (no root needed in Docker)
+    # Removed -sC -O --script=vuln (require raw sockets/root)
+    cmd = "nmap -sT -sV --open -p 1-1000 --host-timeout 120s " + ip
+    output = run_cmd(cmd, timeout=150)
     ports, services = [], []
     for line in output.splitlines():
         m = re.match(r'(\d+)/(tcp|udp)\s+open\s+(\S+)\s*(.*)', line)
@@ -43,20 +55,33 @@ def run_nmap(ip):
                 "service": m.group(3),
                 "version": m.group(4).strip()
             })
-    return {"raw": output, "open_ports": ports, "services": services}
+    return {
+        "raw": output,
+        "open_ports": ports,
+        "services": services,
+        "cloudflare": check_cloudflare(output)
+    }
 
 def run_nikto(target):
-    cmd = "nikto -h http://" + target + " -maxtime 150 -nointeractive -C all"
-    output = run_cmd(cmd, timeout=180)
+    if not tool_available("nikto"):
+        return {"raw": "[NOT INSTALLED] nikto not found", "findings": [], "cloudflare": False}
+    cmd = "nikto -h http://" + target + " -maxtime 120 -nointeractive -C all"
+    output = run_cmd(cmd, timeout=140)
     findings = []
     for line in output.splitlines():
         if line.startswith("+ ") and "Server:" not in line:
             findings.append(line[2:].strip())
-    return {"raw": output, "findings": findings[:30]}
+    return {
+        "raw": output,
+        "findings": findings[:30],
+        "cloudflare": check_cloudflare(output)
+    }
 
 def run_whatweb(target):
-    cmd = "whatweb --color=never --aggression=3 " + target
-    output = run_cmd(cmd, timeout=60)
+    if not tool_available("whatweb"):
+        return {"raw": "[NOT INSTALLED] whatweb not found", "technologies": []}
+    cmd = "whatweb --color=never --aggression=3 --timeout=20 " + target
+    output = run_cmd(cmd, timeout=50)
     techs = []
     m = re.search(r'http[s]?://\S+\s+\[.*?\]\s+(.*)', output)
     if m:
@@ -64,6 +89,8 @@ def run_whatweb(target):
     return {"raw": output, "technologies": techs}
 
 def run_whois(target):
+    if not tool_available("whois"):
+        return {"raw": "[NOT INSTALLED] whois not found", "info": {}}
     cmd = "whois " + target
     output = run_cmd(cmd, timeout=30)
     info = {}
@@ -81,8 +108,11 @@ def run_whois(target):
     return {"raw": output, "info": info}
 
 def run_dirb(target):
-    cmd = "dirb http://" + target + " /usr/share/dirb/wordlists/common.txt -S -r"
-    output = run_cmd(cmd, timeout=120)
+    if not tool_available("dirb"):
+        return {"raw": "[NOT INSTALLED] dirb not found", "found": []}
+    # -f flag handles Cloudflare 30x redirects better
+    cmd = "dirb http://" + target + " /usr/share/dirb/wordlists/common.txt -S -r -f"
+    output = run_cmd(cmd, timeout=110)
     found = []
     for line in output.splitlines():
         if line.startswith("+ ") or "DIRECTORY:" in line:
@@ -90,26 +120,45 @@ def run_dirb(target):
     return {"raw": output, "found": found[:30]}
 
 def run_sslscan(target):
+    if not tool_available("sslscan"):
+        return {"raw": "[NOT INSTALLED] sslscan not found", "issues": []}
     cmd = "sslscan --no-colour " + target
     output = run_cmd(cmd, timeout=60)
     issues = []
     for line in output.splitlines():
         low = line.lower()
-        if any(k in low for k in ["vulnerable","weak","sslv2","sslv3","tls 1.0","tls 1.1","expired","self-signed"]):
+        if any(k in low for k in [
+            "vulnerable", "weak", "sslv2", "sslv3",
+            "tls 1.0", "tls 1.1", "expired", "self-signed"
+        ]):
             issues.append(line.strip())
     return {"raw": output, "issues": issues}
 
 def run_dnsrecon(target):
+    if not tool_available("dnsrecon"):
+        return {"raw": "[NOT INSTALLED] dnsrecon not found", "records": []}
     cmd = "dnsrecon -d " + target + " -t std"
     output = run_cmd(cmd, timeout=60)
     records = []
     for line in output.splitlines():
-        if re.search(r'\s(A|MX|NS|TXT|CNAME|SOA|PTR)\s', line):
+        if re.search(r'\s(A|MX|NS|TXT|CNAME|SOA|PTR|AAAA)\s', line):
             records.append(line.strip())
-    return {"raw": output, "records": records[:20]}
+    return {"raw": output, "records": records[:30]}
 
 def run_msf_scan(ip):
-    rc = "use auxiliary/scanner/portscan/tcp\nset RHOSTS " + ip + "\nset PORTS 21,22,23,25,80,443,445,3306,3389,8080,8443\nset THREADS 10\nrun\nexit\n"
+    if not tool_available("msfconsole"):
+        return {
+            "raw": "[NOT INSTALLED] msfconsole not found. Install metasploit-framework or run on Kali locally.",
+            "msf_open_ports": []
+        }
+    rc = (
+        "use auxiliary/scanner/portscan/tcp\n"
+        "set RHOSTS " + ip + "\n"
+        "set PORTS 21,22,23,25,80,443,445,3306,3389,8080,8443\n"
+        "set THREADS 10\n"
+        "run\n"
+        "exit\n"
+    )
     with open("/tmp/msf_scan.rc", "w") as f:
         f.write(rc)
     output = run_cmd("msfconsole -q -r /tmp/msf_scan.rc", timeout=120)
@@ -125,7 +174,11 @@ def run_curl_headers(target):
     output = run_cmd(cmd, timeout=20)
     headers = {}
     missing_security = []
-    security_headers = ["X-Frame-Options","X-Content-Type-Options","Content-Security-Policy","Strict-Transport-Security","X-XSS-Protection","Referrer-Policy"]
+    security_headers = [
+        "X-Frame-Options", "X-Content-Type-Options",
+        "Content-Security-Policy", "Strict-Transport-Security",
+        "X-XSS-Protection", "Referrer-Policy", "Permissions-Policy"
+    ]
     for line in output.splitlines():
         if ": " in line:
             k, v = line.split(": ", 1)
@@ -133,17 +186,38 @@ def run_curl_headers(target):
     for h in security_headers:
         if h.lower() not in [k.lower() for k in headers]:
             missing_security.append(h)
-    return {"raw": output, "headers": headers, "missing_security": missing_security}
+    is_cf = check_cloudflare(output)
+    return {
+        "raw": output,
+        "headers": headers,
+        "missing_security": missing_security,
+        "cloudflare": is_cf
+    }
+
+# ── cloudflare detection ──────────────────────────────────────────────────────
+
+def detect_cloudflare(results):
+    sources = [
+        results.get('headers', {}).get('cloudflare', False),
+        results.get('nikto',   {}).get('cloudflare', False),
+        results.get('nmap',    {}).get('cloudflare', False),
+    ]
+    return any(sources)
 
 # ── scoring ───────────────────────────────────────────────────────────────────
 
 CRITICAL_PORTS = {23, 445, 3389, 5900, 4444}
 RISKY_PORTS    = {21, 22, 25, 110, 135, 137, 139, 1433, 3306, 8080, 8443}
-RISKY_KEYWORDS = ["sql injection","xss","csrf","traversal","remote file","disclosure","credential","outdated","vulnerable","backdoor","misconfigured","buffer overflow","rce","arbitrary","bypass","injection","exploit"]
+RISKY_KEYWORDS = [
+    "sql injection", "xss", "csrf", "traversal", "remote file",
+    "disclosure", "credential", "outdated", "vulnerable", "backdoor",
+    "misconfigured", "buffer overflow", "rce", "arbitrary", "bypass",
+    "injection", "exploit"
+]
 
 def calculate_score(nmap, nikto, ssl, headers, dirb, msf):
     score, reasons = 0.0, []
-    all_ports = set(nmap.get("open_ports",[])) | set(msf.get("msf_open_ports",[]))
+    all_ports = set(nmap.get("open_ports", [])) | set(msf.get("msf_open_ports", []))
 
     crit = all_ports & CRITICAL_PORTS
     if crit:
@@ -184,6 +258,7 @@ def calculate_score(nmap, nikto, ssl, headers, dirb, msf):
         reasons.append(f"{len(dirb_found)} exposed directories found")
 
     score = round(min(score, 5.0), 1)
+
     if score == 0:     level, color = "SECURE",    "#00ff9d"
     elif score <= 1:   level, color = "LOW RISK",  "#a8ff78"
     elif score <= 2:   level, color = "MODERATE",  "#ffdd57"
@@ -224,7 +299,9 @@ def scan():
         [_nmap, _nikto, _whatweb, _whois, _dirb, _ssl, _dns, _msf, _headers]
     ]
     for t in threads: t.start()
-    for t in threads: t.join(timeout=200)
+    for t in threads: t.join(timeout=160)
+
+    is_cloudflare = detect_cloudflare(results)
 
     scoring = calculate_score(
         results.get('nmap',    {}),
@@ -236,19 +313,20 @@ def scan():
     )
 
     return jsonify({
-        "target":    target,
-        "ip":        ip,
-        "timestamp": timestamp,
-        "nmap":      results.get('nmap',    {"raw": "[NOT RUN]", "open_ports": [], "services": []}),
-        "nikto":     results.get('nikto',   {"raw": "[NOT RUN]", "findings": []}),
-        "whatweb":   results.get('whatweb', {"raw": "[NOT RUN]", "technologies": []}),
-        "whois":     results.get('whois',   {"raw": "[NOT RUN]", "info": {}}),
-        "dirb":      results.get('dirb',    {"raw": "[NOT RUN]", "found": []}),
-        "ssl":       results.get('ssl',     {"raw": "[NOT RUN]", "issues": []}),
-        "dns":       results.get('dns',     {"raw": "[NOT RUN]", "records": []}),
-        "msf":       results.get('msf',     {"raw": "[NOT RUN]", "msf_open_ports": []}),
-        "headers":   results.get('headers', {"raw": "[NOT RUN]", "headers": {}, "missing_security": []}),
-        "score":     scoring,
+        "target":      target,
+        "ip":          ip,
+        "timestamp":   timestamp,
+        "cloudflare":  is_cloudflare,
+        "nmap":        results.get('nmap',    {"raw": "[NOT RUN]", "open_ports": [], "services": []}),
+        "nikto":       results.get('nikto',   {"raw": "[NOT RUN]", "findings": []}),
+        "whatweb":     results.get('whatweb', {"raw": "[NOT RUN]", "technologies": []}),
+        "whois":       results.get('whois',   {"raw": "[NOT RUN]", "info": {}}),
+        "dirb":        results.get('dirb',    {"raw": "[NOT RUN]", "found": []}),
+        "ssl":         results.get('ssl',     {"raw": "[NOT RUN]", "issues": []}),
+        "dns":         results.get('dns',     {"raw": "[NOT RUN]", "records": []}),
+        "msf":         results.get('msf',     {"raw": "[NOT RUN]", "msf_open_ports": []}),
+        "headers":     results.get('headers', {"raw": "[NOT RUN]", "headers": {}, "missing_security": []}),
+        "score":       scoring,
     })
 
 if __name__ == "__main__":
