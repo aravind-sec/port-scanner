@@ -5,6 +5,9 @@ import threading
 import re
 import datetime
 import shutil
+import ssl
+import urllib.request
+import urllib.error
 
 app = Flask(__name__)
 
@@ -19,7 +22,7 @@ def resolve_ip(target):
 def tool_available(name):
     return shutil.which(name) is not None
 
-def run_cmd(cmd, timeout=150):
+def run_cmd(cmd, timeout=120):
     try:
         result = subprocess.run(
             cmd, shell=True, capture_output=True,
@@ -39,18 +42,14 @@ def check_cloudflare(raw):
 
 def run_nmap(ip):
     if not tool_available("nmap"):
-        return {"raw": "[NOT INSTALLED] nmap not found", "open_ports": [], "services": [], "cloudflare": False}
-    # -sT   = TCP connect scan (no raw socket needed)
-    # -Pn   = skip ping discovery (ping also needs raw socket)
-    # --unprivileged = force unprivileged mode explicitly
-    # scan only common ports instead of 1-1000 (faster + avoids permission issues)
+        return {"raw": "[NOT INSTALLED]", "open_ports": [], "services": [], "cloudflare": False}
     cmd = (
         "nmap -sT -sV -Pn --unprivileged --open "
-        "--host-timeout 120s "
+        "--host-timeout 100s "
         "-p 21,22,23,25,53,80,110,143,443,445,3306,3389,5900,8080,8443 "
         + ip
     )
-    output = run_cmd(cmd, timeout=150)
+    output = run_cmd(cmd, timeout=120)
     ports, services = [], []
     for line in output.splitlines():
         m = re.match(r'(\d+)/(tcp|udp)\s+open\s+(\S+)\s*(.*)', line)
@@ -71,9 +70,9 @@ def run_nmap(ip):
 
 def run_nikto(target):
     if not tool_available("nikto"):
-        return {"raw": "[NOT INSTALLED] nikto not found", "findings": [], "cloudflare": False}
-    cmd = "nikto -h http://" + target + " -maxtime 120 -nointeractive -C all"
-    output = run_cmd(cmd, timeout=140)
+        return {"raw": "[NOT INSTALLED]", "findings": [], "cloudflare": False}
+    cmd = "nikto -h http://" + target + " -maxtime 100 -nointeractive -C all"
+    output = run_cmd(cmd, timeout=120)
     findings = []
     for line in output.splitlines():
         if line.startswith("+ ") and "Server:" not in line:
@@ -86,22 +85,26 @@ def run_nikto(target):
 
 def run_whatweb(target):
     if not tool_available("whatweb"):
-        return {"raw": "[NOT INSTALLED] whatweb not found", "technologies": []}
-    # removed --timeout flag (not supported in this version)
-    # use --open-timeout and --read-timeout instead
-    cmd = "whatweb --color=never --aggression=3 --open-timeout=10 --read-timeout=10 " + target
-    output = run_cmd(cmd, timeout=50)
+        return {"raw": "[NOT INSTALLED]", "technologies": []}
+    # use --open-timeout and --read-timeout (correct flags for this version)
+    cmd = "whatweb --color=never --aggression=1 --open-timeout=15 --read-timeout=15 " + target
+    output = run_cmd(cmd, timeout=40)
+    # if still timing out, try plain curl-based fingerprint as fallback
+    if "TIMEOUT" in output or "expired" in output.lower():
+        output = run_cmd("whatweb --color=never " + target, timeout=30)
     techs = []
-    m = re.search(r'http[s]?://\S+\s+\[.*?\]\s+(.*)', output)
-    if m:
-        techs = [t.strip() for t in m.group(1).split(',') if t.strip()]
+    for line in output.splitlines():
+        m = re.search(r'http[s]?://\S+\s+\[.*?\]\s+(.*)', line)
+        if m:
+            techs = [t.strip() for t in m.group(1).split(',') if t.strip()]
+            break
     return {"raw": output, "technologies": techs}
 
 def run_whois(target):
     if not tool_available("whois"):
-        return {"raw": "[NOT INSTALLED] whois not found", "info": {}}
+        return {"raw": "[NOT INSTALLED]", "info": {}}
     cmd = "whois " + target
-    output = run_cmd(cmd, timeout=30)
+    output = run_cmd(cmd, timeout=25)
     info = {}
     for key, pattern in [
         ("registrar",  r'Registrar:\s*(.+)'),
@@ -118,10 +121,9 @@ def run_whois(target):
 
 def run_dirb(target):
     if not tool_available("dirb"):
-        return {"raw": "[NOT INSTALLED] dirb not found", "found": []}
-    # -f handles 30x redirects (Cloudflare), -S silent, -r no recursion
+        return {"raw": "[NOT INSTALLED]", "found": []}
     cmd = "dirb http://" + target + " /usr/share/dirb/wordlists/common.txt -S -r -f"
-    output = run_cmd(cmd, timeout=110)
+    output = run_cmd(cmd, timeout=100)
     found = []
     for line in output.splitlines():
         if line.startswith("+ ") or "DIRECTORY:" in line:
@@ -129,25 +131,90 @@ def run_dirb(target):
     return {"raw": output, "found": found[:30]}
 
 def run_sslscan(target):
-    if not tool_available("sslscan"):
-        return {"raw": "[NOT INSTALLED] sslscan not found", "issues": []}
-    cmd = "sslscan --no-colour " + target
-    output = run_cmd(cmd, timeout=60)
+    # Pure Python SSL check — no external tool needed, no timeout issues
+    result_lines = []
     issues = []
-    for line in output.splitlines():
-        low = line.lower()
-        if any(k in low for k in [
-            "vulnerable", "weak", "sslv2", "sslv3",
-            "tls 1.0", "tls 1.1", "expired", "self-signed"
-        ]):
-            issues.append(line.strip())
-    return {"raw": output, "issues": issues}
+
+    try:
+        ctx = ssl.create_default_context()
+        conn = ctx.wrap_socket(
+            socket.create_connection((target, 443), timeout=15),
+            server_hostname=target
+        )
+        cert = conn.getpeercert()
+        cipher = conn.cipher()
+        version = conn.version()
+        conn.close()
+
+        result_lines.append(f"Connected to {target}:443")
+        result_lines.append(f"TLS Version in use: {version}")
+        result_lines.append(f"Cipher: {cipher[0]} ({cipher[2]} bits)")
+
+        # Check cert expiry
+        import datetime as dt
+        expire_str = cert.get('notAfter', '')
+        if expire_str:
+            expire_dt = dt.datetime.strptime(expire_str, '%b %d %H:%M:%S %Y %Z')
+            days_left = (expire_dt - dt.datetime.utcnow()).days
+            result_lines.append(f"Certificate expires: {expire_str} ({days_left} days left)")
+            if days_left < 30:
+                issues.append(f"Certificate expiring soon: {days_left} days left")
+            if days_left < 0:
+                issues.append("Certificate EXPIRED")
+
+        # Check subject
+        subject = dict(x[0] for x in cert.get('subject', []))
+        result_lines.append(f"Subject: {subject.get('commonName', 'Unknown')}")
+
+        # Check issuer
+        issuer = dict(x[0] for x in cert.get('issuer', []))
+        result_lines.append(f"Issuer: {issuer.get('organizationName', 'Unknown')}")
+        if issuer.get('commonName') == subject.get('commonName'):
+            issues.append("Self-signed certificate detected")
+
+        # Warn about TLS version
+        if version in ("TLSv1", "TLSv1.1"):
+            issues.append(f"Weak TLS version in use: {version}")
+
+        # Try older protocol connections using openssl
+        for proto, flag in [("TLSv1.0", "-tls1"), ("TLSv1.1", "-tls1_1")]:
+            check = run_cmd(
+                f"echo '' | openssl s_client -connect {target}:443 {flag} 2>&1",
+                timeout=10
+            )
+            if "Cipher is" in check or "CONNECTED" in check:
+                issues.append(f"{proto} is enabled (deprecated protocol)")
+                result_lines.append(f"WARNING: {proto} accepted by server")
+
+    except ssl.SSLCertVerificationError as e:
+        issues.append(f"SSL Certificate error: {str(e)}")
+        result_lines.append(f"SSL Error: {str(e)}")
+    except ConnectionRefusedError:
+        result_lines.append("Port 443 not open — SSL/TLS not available")
+    except socket.timeout:
+        result_lines.append("Connection timed out")
+    except Exception as e:
+        result_lines.append(f"SSL check error: {str(e)}")
+
+    # Also try sslscan if available (with short timeout)
+    if tool_available("sslscan"):
+        ssl_out = run_cmd("sslscan --no-colour " + target, timeout=30)
+        if "TIMEOUT" not in ssl_out and "ERROR" not in ssl_out:
+            result_lines.append("\n--- sslscan output ---")
+            result_lines.append(ssl_out)
+            for line in ssl_out.splitlines():
+                low = line.lower()
+                if any(k in low for k in ["sslv2", "sslv3", "tls 1.0", "tls 1.1", "weak", "vulnerable"]):
+                    if line.strip() not in issues:
+                        issues.append(line.strip())
+
+    return {"raw": "\n".join(result_lines), "issues": issues}
 
 def run_dnsrecon(target):
     if not tool_available("dnsrecon"):
-        return {"raw": "[NOT INSTALLED] dnsrecon not found", "records": []}
+        return {"raw": "[NOT INSTALLED]", "records": []}
     cmd = "dnsrecon -d " + target + " -t std"
-    output = run_cmd(cmd, timeout=60)
+    output = run_cmd(cmd, timeout=45)
     records = []
     for line in output.splitlines():
         if re.search(r'\s(A|MX|NS|TXT|CNAME|SOA|PTR|AAAA)\s', line):
@@ -157,7 +224,7 @@ def run_dnsrecon(target):
 def run_msf_scan(ip):
     if not tool_available("msfconsole"):
         return {
-            "raw": "[NOT AVAILABLE] Metasploit not installed in this environment.\nRun msfconsole locally on Kali for full MSF scanning.",
+            "raw": "[NOT AVAILABLE ON CLOUD]\nMetasploit requires local Kali installation.\nRun this scan on your local Kali machine using:\n  msfconsole\n  use auxiliary/scanner/portscan/tcp\n  set RHOSTS " + ip + "\n  run",
             "msf_open_ports": []
         }
     rc = (
@@ -179,7 +246,7 @@ def run_msf_scan(ip):
     return {"raw": output, "msf_open_ports": open_ports}
 
 def run_curl_headers(target):
-    cmd = "curl -s -I -L --max-time 15 http://" + target
+    cmd = "curl -s -I -L --max-time 15 --connect-timeout 10 http://" + target
     output = run_cmd(cmd, timeout=20)
     headers = {}
     missing_security = []
@@ -306,7 +373,7 @@ def scan():
         [_nmap, _nikto, _whatweb, _whois, _dirb, _ssl, _dns, _msf, _headers]
     ]
     for t in threads: t.start()
-    for t in threads: t.join(timeout=160)
+    for t in threads: t.join(timeout=150)
 
     is_cloudflare = detect_cloudflare(results)
 
